@@ -73,9 +73,7 @@ fn start_node(id: Int) -> process.Subject(NodeMsg) {
             <> " fingers set: "
             <> int.to_string(list.length(finger_table)),
           )
-          echo list.unzip(finger_table).0
-          //echo finger_table
-          //io.debug(finger_table)
+          //echo list.unzip(finger_table).0
           actor.continue(NodeState(..state, finger_table: finger_table))
         }
 
@@ -174,7 +172,7 @@ fn set_finger_table(
   case i >= m {
     True -> {
       let assert Ok(sub) = list.key_find(nodes, id)
-      process.send(sub, SetFingers(finger_table))
+      process.send(sub, SetFingers(list.reverse(finger_table)))
     }
     False -> {
       let assert Ok(jump) = int.power(2, int.to_float(i))
@@ -238,6 +236,6 @@ pub fn main() {
   let nodes = make_ring(16, 512)
   let assert Ok(n) = list.first(nodes)
   echo n.0
-  process.send(n.1, FindSuccessor(100_000_000, n.1))
+  process.send(n.1, FindSuccessor(20_000_000, n.1))
   process.sleep(1000)
 }
