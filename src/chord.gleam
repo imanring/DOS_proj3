@@ -1,4 +1,3 @@
-import gleam/dict
 import gleam/erlang/process
 import gleam/float
 import gleam/int
@@ -16,7 +15,7 @@ fn find_closest_preceding_finger(
   case finger_table {
     [] -> Error(Nil)
     [head, ..tail] -> {
-      let #(finger_id, finger_node) = head
+      let #(finger_id, _finger_node) = head
       case list.length(tail) {
         0 -> Ok(head)
         _ -> {
@@ -67,13 +66,7 @@ fn start_node(id: Int) -> process.Subject(NodeMsg) {
         ShutDown -> actor.stop()
 
         SetFingers(finger_table) -> {
-          io.println(
-            "node "
-            <> int.to_string(state.id)
-            <> " fingers set: "
-            <> int.to_string(list.length(finger_table)),
-          )
-          echo list.unzip(finger_table).0
+          // echo list.unzip(finger_table).0
           actor.continue(NodeState(..state, finger_table: finger_table))
         }
 
@@ -86,12 +79,6 @@ fn start_node(id: Int) -> process.Subject(NodeMsg) {
         }
 
         FindSuccessor(id, reply_to) -> {
-          io.println(
-            "node "
-            <> int.to_string(state.id)
-            <> " finding successor of "
-            <> int.to_string(id),
-          )
           let assert Ok(successor) = list.first(state.finger_table)
           let found =
             { { state.id < id } && { id < successor.0 } }
@@ -121,12 +108,10 @@ fn start_node(id: Int) -> process.Subject(NodeMsg) {
               io.println(
                 "node "
                 <> int.to_string(state.id)
-                <> " forwarding to finger"
+                <> " forwarding to finger "
                 <> int.to_string(closest_preceding_finger.0),
               )
               // forward the message to closest_preceding_finger
-              // let result = process.call(closest_preceding_finger)
-              process.sleep(100)
               process.send(
                 closest_preceding_finger.1,
                 FindSuccessor(id, reply_to),
@@ -237,7 +222,7 @@ fn make_ring(n: Int, k: Int) {
 }
 
 pub fn main() {
-  let nodes = make_ring(16, 512)
+  let nodes = make_ring(128, 512)
   let assert Ok(n) = list.first(nodes)
   echo n.0
   process.send(n.1, FindSuccessor(500_000_000, n.1))
