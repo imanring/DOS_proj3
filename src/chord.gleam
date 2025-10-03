@@ -136,6 +136,7 @@ fn start_node(id: Int) -> process.Subject(NodeMsg) {
 }
 
 fn gen_rand(i, t, m, l) {
+  // generate t random integers between 0 and m
   case i > t {
     True -> l
     False -> gen_rand(i + 1, t, m, [int.random(m), ..l])
@@ -159,14 +160,19 @@ fn set_finger_table(
   finger_table,
   nodes: List(#(Int, process.Subject(NodeMsg))),
 ) {
+  // set finger table of node with id=id
   let assert Ok(max) = int.power(2, 30.0)
   case i >= m {
     True -> {
+      // you are finished looking for jumps
+      // send the table to the node now
       let assert Ok(sub) = list.key_find(nodes, id)
       process.send(sub, SetFingers(list.reverse(finger_table)))
     }
     False -> {
+      // exponential jump
       let assert Ok(jump) = int.power(2, int.to_float(i))
+      // find first node greater than id + jump
       let rslt = case
         list.first(
           list.filter(nodes, fn(element) {
@@ -176,10 +182,12 @@ fn set_finger_table(
       {
         Ok(rslt) -> rslt
         Error(_) -> {
+          // if there is no node greater than id + jump, that means the next one is the first node
           let assert Ok(rslt) = list.first(nodes)
           rslt
         }
       }
+      // only add fingers that are unique
       case list.contains(finger_table, rslt) {
         True -> set_finger_table(id, i + 1, m, finger_table, nodes)
         False -> set_finger_table(id, i + 1, m, [rslt, ..finger_table], nodes)
@@ -189,6 +197,7 @@ fn set_finger_table(
 }
 
 fn set_tables(ids, nodes) {
+  // set finger tables for each node.
   case ids {
     [] -> Nil
     [head, ..tail] -> {
@@ -198,33 +207,46 @@ fn set_tables(ids, nodes) {
   }
 }
 
+// assign keys to nodes
 fn add_keys(keys, nodes: List(#(Int, process.Subject(NodeMsg)))) {
   case nodes {
     [x, y, ..tail] -> {
+      // find keys between x and y
       let filt_keys = list.filter(keys, fn(key) { key > x.0 && key < y.0 })
+      // assign those keys to y
       process.send(y.1, SetKeys(filt_keys))
+      // assign keys to y
       add_keys(keys, [y, ..tail])
     }
     _ -> Nil
+    // you are looking to assign keys to the node after the greatest node. This has already been done
   }
 }
 
 fn make_ring(n: Int, k: Int) {
   let assert Ok(m) = int.power(2, 30.0)
-  // generate k random integers on range m
+  // generate k random integers on range m as the keys
   let keys = gen_rand(1, k, float.round(m), [])
+  // sort them for easier assignment
   let keys = list.sort(keys, by: int.compare)
+  // generate ids for the nodes
   let ids = gen_rand(1, n, float.round(m), [])
   let ids = list.sort(ids, by: int.compare)
   echo ids
+  // create actors
   let nodes = list.reverse(create_nodes(ids, []))
+  // create their routing/finger tables
   set_tables(ids, nodes)
+
+  // assign keys to the first node
   let assert Ok(x) = list.first(nodes)
   let assert Ok(y) = list.last(nodes)
   // keys greater than the first node and less than the last node
   let filt_keys = list.filter(keys, fn(key) { key < x.0 || key > y.0 })
   // get stored in the first node
   process.send(x.1, SetKeys(filt_keys))
+
+  // assign keys to all the other nodes
   add_keys(keys, nodes)
   nodes
 }
