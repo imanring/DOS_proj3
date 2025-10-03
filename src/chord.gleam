@@ -71,8 +71,10 @@ fn start_node(id: Int) -> process.Subject(NodeMsg) {
         }
 
         SetKeys(keys) -> {
+          // echo [state.id, ..keys]
           actor.continue(NodeState(..state, file_keys: keys))
         }
+
         SuccessorResult(result) -> {
           io.println("Got result! The Id is " <> int.to_string(result.0))
           actor.continue(state)
@@ -201,7 +203,7 @@ fn add_keys(keys, nodes: List(#(Int, process.Subject(NodeMsg)))) {
     [x, y, ..tail] -> {
       let filt_keys = list.filter(keys, fn(key) { key > x.0 && key < y.0 })
       process.send(y.1, SetKeys(filt_keys))
-      add_keys(keys, tail)
+      add_keys(keys, [y, ..tail])
     }
     _ -> Nil
   }
@@ -217,6 +219,12 @@ fn make_ring(n: Int, k: Int) {
   echo ids
   let nodes = list.reverse(create_nodes(ids, []))
   set_tables(ids, nodes)
+  let assert Ok(x) = list.first(nodes)
+  let assert Ok(y) = list.last(nodes)
+  // keys greater than the first node and less than the last node
+  let filt_keys = list.filter(keys, fn(key) { key < x.0 || key > y.0 })
+  // get stored in the first node
+  process.send(x.1, SetKeys(filt_keys))
   add_keys(keys, nodes)
   nodes
 }
