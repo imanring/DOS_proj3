@@ -21,8 +21,10 @@ fn find_closest_preceding_finger(
         _ -> {
           // if finger_id is between n and id on the circle in a clockwise way
           case
-            { { n < finger_id } && { finger_id < id } }
-            || { { n > id } && { { n > finger_id } || { finger_id < id } } }
+            {
+              { { n < finger_id } && { finger_id < id } }
+              || { { n > id } && { { n < finger_id } || { finger_id < id } } }
+            }
           {
             True -> Ok(head)
             False -> find_closest_preceding_finger(n, id, tail)
@@ -66,7 +68,17 @@ fn start_node(id: Int) -> process.Subject(NodeMsg) {
         ShutDown -> actor.stop()
 
         SetFingers(finger_table) -> {
-          // echo list.unzip(finger_table).0
+          // sort fingers
+          let assert Ok(m) = int.power(2, 30.0)
+          let m = float.round(m)
+          let finger_table =
+            list.sort(finger_table, fn(a, b) {
+              int.compare(
+                { a.0 + m - state.id } % m,
+                { b.0 + m - state.id } % m,
+              )
+            })
+          // echo [state.id, ..list.unzip(finger_table).0]
           actor.continue(NodeState(..state, finger_table: finger_table))
         }
 
@@ -113,6 +125,7 @@ fn start_node(id: Int) -> process.Subject(NodeMsg) {
                 <> " forwarding to finger "
                 <> int.to_string(closest_preceding_finger.0),
               )
+              process.sleep(100)
               // forward the message to closest_preceding_finger
               process.send(
                 closest_preceding_finger.1,
@@ -255,6 +268,8 @@ pub fn main() {
   let nodes = make_ring(128, 512)
   let assert Ok(n) = list.first(nodes)
   echo n.0
-  process.send(n.1, FindSuccessor(500_000_000, n.1))
+  process.send(n.1, FindSuccessor(300_000_000, n.1))
+  process.sleep(1000)
+  process.send(n.1, FindSuccessor(10, n.1))
   process.sleep(1000)
 }
