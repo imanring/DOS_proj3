@@ -1,3 +1,4 @@
+import gleam/dict
 import gleam/erlang/process
 import gleam/float
 import gleam/int
@@ -72,6 +73,8 @@ fn start_node(id: Int) -> process.Subject(NodeMsg) {
             <> " fingers set: "
             <> int.to_string(list.length(finger_table)),
           )
+          echo list.unzip(finger_table).0
+          //echo finger_table
           //io.debug(finger_table)
           actor.continue(NodeState(..state, finger_table: finger_table))
         }
@@ -80,7 +83,7 @@ fn start_node(id: Int) -> process.Subject(NodeMsg) {
           actor.continue(NodeState(..state, file_keys: keys))
         }
         SuccessorResult(result) -> {
-          io.print("Got result! The Id is " <> int.to_string(result.0))
+          io.println("Got result! The Id is " <> int.to_string(result.0))
           actor.continue(state)
         }
 
@@ -167,6 +170,7 @@ fn set_finger_table(
   finger_table,
   nodes: List(#(Int, process.Subject(NodeMsg))),
 ) {
+  let assert Ok(max) = int.power(2, 30.0)
   case i >= m {
     True -> {
       let assert Ok(sub) = list.key_find(nodes, id)
@@ -176,7 +180,9 @@ fn set_finger_table(
       let assert Ok(jump) = int.power(2, int.to_float(i))
       let rslt = case
         list.first(
-          list.filter(nodes, fn(element) { element.0 > id + float.round(jump) }),
+          list.filter(nodes, fn(element) {
+            element.0 > { id + float.round(jump) } % float.round(max)
+          }),
         )
       {
         Ok(rslt) -> rslt
@@ -185,7 +191,10 @@ fn set_finger_table(
           rslt
         }
       }
-      set_finger_table(id, i + 1, m, [rslt, ..finger_table], nodes)
+      case list.contains(finger_table, rslt) {
+        True -> set_finger_table(id, i + 1, m, finger_table, nodes)
+        False -> set_finger_table(id, i + 1, m, [rslt, ..finger_table], nodes)
+      }
     }
   }
 }
@@ -215,19 +224,20 @@ fn make_ring(n: Int, k: Int) {
   let assert Ok(m) = int.power(2, 30.0)
   // generate k random integers on range m
   let keys = gen_rand(1, k, float.round(m), [])
-  let keys = list.sort(keys, fn(a, b) { int.compare(a, b) })
+  let keys = list.sort(keys, by: int.compare)
   let ids = gen_rand(1, n, float.round(m), [])
-  let ids = list.sort(ids, fn(a, b) { int.compare(a, b) })
-  let nodes = create_nodes(ids, [])
+  let ids = list.sort(ids, by: int.compare)
+  echo ids
+  let nodes = list.reverse(create_nodes(ids, []))
   set_tables(ids, nodes)
   add_keys(keys, nodes)
   nodes
 }
 
 pub fn main() {
-  let nodes = make_ring(128, 512)
+  let nodes = make_ring(16, 512)
   let assert Ok(n) = list.first(nodes)
   echo n.0
-  process.send(n.1, FindSuccessor(100_000, n.1))
+  process.send(n.1, FindSuccessor(100_000_000, n.1))
   process.sleep(1000)
 }
