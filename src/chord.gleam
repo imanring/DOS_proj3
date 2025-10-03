@@ -20,10 +20,10 @@ fn find_closest_preceding_finger(
       case list.length(tail) {
         0 -> Ok(head)
         _ -> {
-          // if finger_id is between n and id mod 2^m, return finger_node
+          // if finger_id is between n and id on the circle in a clockwise way
           case
-            { { id > finger_id } && { n < finger_id } }
-            || { { n > id } && { { id > finger_id } || { n < finger_id } } }
+            { { n < finger_id } && { finger_id < id } }
+            || { { n > id } && { { n > finger_id } || { finger_id < id } } }
           {
             True -> Ok(head)
             False -> find_closest_preceding_finger(n, id, tail)
@@ -73,7 +73,7 @@ fn start_node(id: Int) -> process.Subject(NodeMsg) {
             <> " fingers set: "
             <> int.to_string(list.length(finger_table)),
           )
-          //echo list.unzip(finger_table).0
+          echo list.unzip(finger_table).0
           actor.continue(NodeState(..state, finger_table: finger_table))
         }
 
@@ -94,10 +94,10 @@ fn start_node(id: Int) -> process.Subject(NodeMsg) {
           )
           let assert Ok(successor) = list.first(state.finger_table)
           let found =
-            { { id > state.id } && { id < successor.0 } }
+            { { state.id < id } && { id < successor.0 } }
             || {
-              { state.id > id }
-              && { { id > successor.0 } || { state.id < successor.0 } }
+              { state.id > successor.0 }
+              && { { state.id < id } || { id < successor.0 } }
             }
           case found {
             True -> {
@@ -113,7 +113,11 @@ fn start_node(id: Int) -> process.Subject(NodeMsg) {
             }
             False -> {
               let assert Ok(closest_preceding_finger) =
-                find_closest_preceding_finger(state.id, id, state.finger_table)
+                find_closest_preceding_finger(
+                  state.id,
+                  id,
+                  list.reverse(state.finger_table),
+                )
               io.println(
                 "node "
                 <> int.to_string(state.id)
@@ -236,6 +240,6 @@ pub fn main() {
   let nodes = make_ring(16, 512)
   let assert Ok(n) = list.first(nodes)
   echo n.0
-  process.send(n.1, FindSuccessor(20_000_000, n.1))
+  process.send(n.1, FindSuccessor(500_000_000, n.1))
   process.sleep(1000)
 }
