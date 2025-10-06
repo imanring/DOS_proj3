@@ -3,6 +3,7 @@ import gleam/float
 import gleam/int
 import gleam/io
 import gleam/list
+import gleam/option
 import gleam/otp/actor
 
 // import gleam/crypto
@@ -43,7 +44,7 @@ pub type NodeMsg {
   SetKeys(keys: List(Int))
   AddKey(key: Int)
   // Notify(process.Subject(NodeMsg))
-  // GetPredecessor(process.Subject(NodeMsg))
+  SetPredecessor(#(Int, process.Subject(NodeMsg)))
   // PredecessorResponse(Maybe(process.Subject(NodeMsg)))
   ShutDown
 }
@@ -52,6 +53,7 @@ pub type NodeState {
   NodeState(
     id: Int,
     file_keys: List(Int),
+    predecessor: option.Option(#(Int, process.Subject(NodeMsg))),
     finger_table: List(#(Int, process.Subject(NodeMsg))),
     requests_table: List(Int),
     //    boss: process.Subject(BossMsg),
@@ -59,7 +61,7 @@ pub type NodeState {
 }
 
 fn start_node(id: Int) -> process.Subject(NodeMsg) {
-  let init = NodeState(id, [], [], [])
+  let init = NodeState(id, [], option.None, [], [])
 
   let builder =
     actor.new(init)
@@ -80,6 +82,16 @@ fn start_node(id: Int) -> process.Subject(NodeMsg) {
             })
           // echo [state.id, ..list.unzip(finger_table).0]
           actor.continue(NodeState(..state, finger_table: finger_table))
+        }
+
+        SetPredecessor(node) -> {
+          io.println(
+            "Node "
+            <> int.to_string(state.id)
+            <> "'s predecessor is"
+            <> int.to_string(node.0),
+          )
+          actor.continue(NodeState(..state, predecessor: option.Some(node)))
         }
 
         SetKeys(keys) -> {
@@ -170,7 +182,7 @@ fn set_finger_table(
   id,
   i,
   m,
-  finger_table,
+  finger_table: List(#(Int, process.Subject(NodeMsg))),
   nodes: List(#(Int, process.Subject(NodeMsg))),
 ) {
   // set finger table of node with id=id
@@ -180,7 +192,17 @@ fn set_finger_table(
       // you are finished looking for jumps
       // send the table to the node now
       let assert Ok(sub) = list.key_find(nodes, id)
+      // echo id
+      // echo finger_table
+      case list.reverse(finger_table) {
+        [head, ..] -> process.send(head.1, SetPredecessor(#(id, sub)))
+        [] -> Nil
+      }
       process.send(sub, SetFingers(list.reverse(finger_table)))
+      // echo finger_table
+      // process.send(list.last(finger_table).1, SetPredecessor(#(id, sub)))
+
+      
     }
     False -> {
       // exponential jump
