@@ -38,6 +38,7 @@ fn find_closest_preceding_finger(
 pub type RequestType {
   SetSuccessor
   FindFileKey
+  ReplaceFinger(id: Int)
 }
 
 pub type NodeMsg {
@@ -49,6 +50,7 @@ pub type NodeMsg {
   AddKey(key: Int)
   Join(node: process.Subject(NodeMsg))
   SearchFileKey(key: Int, self_subject: process.Subject(NodeMsg))
+  FixFingers(self_subject: process.Subject(NodeMsg))
   // Notify(process.Subject(NodeMsg))
   // GetPredecessor(process.Subject(NodeMsg))
   // PredecessorResponse(Maybe(process.Subject(NodeMsg)))
@@ -64,6 +66,34 @@ pub type NodeState {
     requests_table: List(#(Int, RequestType)),
     //    boss: process.Subject(BossMsg),
   )
+}
+
+fn fix_fingers(i: Int, self_subject: process.Subject(NodeMsg), state: NodeState) {
+  // check the n + 2^i for a next finger
+  let assert Ok(m) = int.power(2, 30.0)
+  let m = float.round(m)
+  let assert Ok(jump) = int.power(2, int.to_float(i))
+  let id = { state.id + float.round(jump) } % m
+  process.send(self_subject, FindSuccessor(id, self_subject))
+  // add to requests table
+  // only replace finger if it is between self_id + 2^i % m and self_id + 2^(i+1) % m
+  let new_request = case
+    list.filter(state.finger_table, fn(x) {
+      x.0 > id && x.0 < { state.id + float.round(jump *. 2.0) } % m
+    })
+  {
+    [] -> #(id, ReplaceFinger(-1))
+    [head, ..] -> #(id, ReplaceFinger(head.0))
+  }
+  case i >= 29 {
+    True -> {
+      [new_request]
+    }
+    False -> {
+      let other_requests = fix_fingers(i + 1, self_subject, state)
+      [new_request, ..other_requests]
+    }
+  }
 }
 
 fn start_node(id: Int) -> process.Subject(NodeMsg) {
@@ -96,7 +126,7 @@ fn start_node(id: Int) -> process.Subject(NodeMsg) {
         }
 
         SuccessorResult(result) -> {
-          io.println("Got result! The Id is " <> int.to_string(result.0))
+          //io.println("Got result! The Id is " <> int.to_string(result.0))
           case list.key_find(state.requests_table, result.0) {
             Ok(rslt) -> {
               // remove from requests table
@@ -133,6 +163,64 @@ fn start_node(id: Int) -> process.Subject(NodeMsg) {
                     NodeState(..state, requests_table: new_request_table),
                   )
                 }
+                ReplaceFinger(finger_id) -> {
+                  // replace finger with result
+                  let new_finger_table = case finger_id {
+                    -1 -> {
+                      // add it to the table if it isn't already there
+                      case
+                        list.contains(state.finger_table, #(result.1, result.2))
+                      {
+                        True -> state.finger_table
+                        False -> {
+                          io.println(
+                            "Adding to Node "
+                            <> int.to_string(state.id)
+                            <> "'s finger table.",
+                          )
+                          [#(result.1, result.2), ..state.finger_table]
+                        }
+                      }
+                    }
+                    _ -> {
+                      io.println(
+                        "Node "
+                        <> int.to_string(state.id)
+                        <> " replacing finger "
+                        <> int.to_string(finger_id)
+                        <> " with "
+                        <> int.to_string(result.1)
+                        <> ".",
+                      )
+                      // replace the finger with finger_id
+                      list.map(state.finger_table, fn(x) {
+                        case x.0 == finger_id {
+                          True -> #(result.1, result.2)
+                          False -> x
+                        }
+                      })
+                    }
+                  }
+                  // sort fingers
+                  let assert Ok(m) = int.power(2, 30.0)
+                  let m = float.round(m)
+                  let new_finger_table =
+                    list.sort(new_finger_table, fn(a, b) {
+                      int.compare(
+                        { a.0 + m - state.id } % m,
+                        { b.0 + m - state.id } % m,
+                      )
+                    })
+                  echo list.unzip(new_finger_table).0
+                  // remove from requests table and set successor
+                  actor.continue(
+                    NodeState(
+                      ..state,
+                      requests_table: new_request_table,
+                      finger_table: new_finger_table,
+                    ),
+                  )
+                }
               }
             }
             _ -> {
@@ -152,12 +240,12 @@ fn start_node(id: Int) -> process.Subject(NodeMsg) {
             }
           case found {
             True -> {
-              io.println(
-                "node "
-                <> int.to_string(state.id)
-                <> " found successor of "
-                <> int.to_string(id),
-              )
+              //io.println(
+              //  "node "
+              //  <> int.to_string(state.id)
+              //  <> " found successor of "
+              //  <> int.to_string(id),
+              //)
               // send successor to reply_to
               process.send(
                 reply_to,
@@ -172,13 +260,13 @@ fn start_node(id: Int) -> process.Subject(NodeMsg) {
                   id,
                   list.reverse(state.finger_table),
                 )
-              io.println(
-                "node "
-                <> int.to_string(state.id)
-                <> " forwarding to finger "
-                <> int.to_string(closest_preceding_finger.0),
-              )
-              process.sleep(100)
+              //io.println(
+              //  "node "
+              //  <> int.to_string(state.id)
+              //  <> " forwarding to finger "
+              //  <> int.to_string(closest_preceding_finger.0),
+              //)
+              process.sleep(10)
               // forward the message to closest_preceding_finger
               process.send(
                 closest_preceding_finger.1,
@@ -213,6 +301,17 @@ fn start_node(id: Int) -> process.Subject(NodeMsg) {
               #(key, FindFileKey),
               ..state.requests_table
             ]),
+          )
+        }
+
+        FixFingers(self_subject) -> {
+          // fix fingers
+          let new_requests = fix_fingers(0, self_subject, state)
+          actor.continue(
+            NodeState(
+              ..state,
+              requests_table: list.append(new_requests, state.requests_table),
+            ),
           )
         }
       }
@@ -341,6 +440,7 @@ fn make_ring(n: Int, k: Int) {
 pub fn main() {
   let nodes = make_ring(512, 1024)
   let assert Ok(n) = list.first(nodes)
+  process.send(n.1, FixFingers(n.1))
   // echo n.0
   process.send(n.1, SearchFileKey(300_000_000, n.1))
   process.sleep(1000)
