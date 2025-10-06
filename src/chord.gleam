@@ -35,13 +35,20 @@ fn find_closest_preceding_finger(
   }
 }
 
+pub type RequestType {
+  SetSuccessor
+  FindFileKey
+}
+
 pub type NodeMsg {
   // Find the successor of id
   FindSuccessor(id: Int, reply_to: process.Subject(NodeMsg))
-  SuccessorResult(result: #(Int, process.Subject(NodeMsg)))
+  SuccessorResult(result: #(Int, Int, process.Subject(NodeMsg)))
   SetFingers(finger_table: List(#(Int, process.Subject(NodeMsg))))
   SetKeys(keys: List(Int))
   AddKey(key: Int)
+  Join(node: process.Subject(NodeMsg))
+  SearchFileKey(key: Int, self_subject: process.Subject(NodeMsg))
   // Notify(process.Subject(NodeMsg))
   // GetPredecessor(process.Subject(NodeMsg))
   // PredecessorResponse(Maybe(process.Subject(NodeMsg)))
@@ -52,8 +59,9 @@ pub type NodeState {
   NodeState(
     id: Int,
     file_keys: List(Int),
+    // finger table should be sorted from closest to furthest in a clockwise manner
     finger_table: List(#(Int, process.Subject(NodeMsg))),
-    requests_table: List(Int),
+    requests_table: List(#(Int, RequestType)),
     //    boss: process.Subject(BossMsg),
   )
 }
@@ -89,7 +97,49 @@ fn start_node(id: Int) -> process.Subject(NodeMsg) {
 
         SuccessorResult(result) -> {
           io.println("Got result! The Id is " <> int.to_string(result.0))
-          actor.continue(state)
+          case list.key_find(state.requests_table, result.0) {
+            Ok(rslt) -> {
+              // remove from requests table
+              let new_request_table =
+                list.filter(state.requests_table, fn(x) {
+                  x != #(result.0, rslt)
+                })
+              case rslt {
+                SetSuccessor -> {
+                  // set successor to result
+                  let new_finger_table = case state.finger_table {
+                    [] -> [#(result.1, result.2)]
+                    [_first, ..rest] -> [#(result.1, result.2), ..rest]
+                  }
+                  // remove from requests table and set successor
+                  actor.continue(
+                    NodeState(
+                      ..state,
+                      requests_table: new_request_table,
+                      finger_table: new_finger_table,
+                    ),
+                  )
+                }
+                FindFileKey -> {
+                  io.println(
+                    "Node "
+                    <> int.to_string(state.id)
+                    <> " received the file key "
+                    <> int.to_string(result.0)
+                    <> ".",
+                  )
+                  // remove from requests table
+                  actor.continue(
+                    NodeState(..state, requests_table: new_request_table),
+                  )
+                }
+              }
+            }
+            _ -> {
+              io.println("I didn't know about that request!")
+              actor.continue(state)
+            }
+          }
         }
 
         FindSuccessor(id, reply_to) -> {
@@ -109,7 +159,10 @@ fn start_node(id: Int) -> process.Subject(NodeMsg) {
                 <> int.to_string(id),
               )
               // send successor to reply_to
-              process.send(reply_to, SuccessorResult(successor))
+              process.send(
+                reply_to,
+                SuccessorResult(#(id, successor.0, successor.1)),
+              )
               actor.continue(state)
             }
             False -> {
@@ -139,6 +192,27 @@ fn start_node(id: Int) -> process.Subject(NodeMsg) {
         AddKey(key) -> {
           actor.continue(
             NodeState(..state, file_keys: [key, ..state.file_keys]),
+          )
+        }
+
+        Join(node) -> {
+          process.send(node, FindSuccessor(state.id, node))
+          actor.continue(
+            NodeState(..state, requests_table: [
+              #(state.id, SetSuccessor),
+              ..state.requests_table
+            ]),
+          )
+        }
+
+        SearchFileKey(key, self_subject) -> {
+          // find the successor of key
+          process.send(self_subject, FindSuccessor(key, self_subject))
+          actor.continue(
+            NodeState(..state, requests_table: [
+              #(key, FindFileKey),
+              ..state.requests_table
+            ]),
           )
         }
       }
@@ -245,7 +319,7 @@ fn make_ring(n: Int, k: Int) {
   // generate ids for the nodes
   let ids = gen_rand(1, n, float.round(m), [])
   let ids = list.sort(ids, by: int.compare)
-  echo ids
+  // echo ids
   // create actors
   let nodes = list.reverse(create_nodes(ids, []))
   // create their routing/finger tables
@@ -265,11 +339,11 @@ fn make_ring(n: Int, k: Int) {
 }
 
 pub fn main() {
-  let nodes = make_ring(128, 512)
+  let nodes = make_ring(512, 1024)
   let assert Ok(n) = list.first(nodes)
-  echo n.0
-  process.send(n.1, FindSuccessor(300_000_000, n.1))
+  // echo n.0
+  process.send(n.1, SearchFileKey(300_000_000, n.1))
   process.sleep(1000)
-  process.send(n.1, FindSuccessor(10, n.1))
+  process.send(n.1, SearchFileKey(1000, n.1))
   process.sleep(1000)
 }
