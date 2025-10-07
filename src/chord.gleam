@@ -38,9 +38,10 @@ fn find_closest_preceding_finger(
 
 pub type NodeMsg {
   // Find the successor of id
-  FindSuccessor(id: Int, reply_to: process.Subject(NodeMsg))
-  SuccessorResult(result: #(Int, process.Subject(NodeMsg)))
+  FindSuccessor(id: Int, reply_to: process.Subject(NodeMsg), update_finger: Bool)
+  SuccessorResult(result: #(Int, process.Subject(NodeMsg)), update_finger: Bool)
   SetFingers(finger_table: List(#(Int, process.Subject(NodeMsg))))
+  Join(id: Int, node: #(Int, process.Subject(NodeMsg)))
   SetKeys(keys: List(Int))
   AddKey(key: Int)
   // Notify(process.Subject(NodeMsg))
@@ -99,12 +100,15 @@ fn start_node(id: Int) -> process.Subject(NodeMsg) {
           actor.continue(NodeState(..state, file_keys: keys))
         }
 
-        SuccessorResult(result) -> {
+        SuccessorResult(result, update_finger) -> {
           io.println("Got result! The Id is " <> int.to_string(result.0))
-          actor.continue(state)
+          case update_finger {
+            False -> actor.continue(state)
+            True -> actor.continue(NodeState(..state, finger_table: [result]))  // Set the successor for the newly joined node
+          }
         }
 
-        FindSuccessor(id, reply_to) -> {
+        FindSuccessor(id, reply_to, update_finger) -> {
           let assert Ok(successor) = list.first(state.finger_table)
           let found =
             { { state.id < id } && { id < successor.0 } }
@@ -121,7 +125,7 @@ fn start_node(id: Int) -> process.Subject(NodeMsg) {
                 <> int.to_string(id),
               )
               // send successor to reply_to
-              process.send(reply_to, SuccessorResult(successor))
+              process.send(reply_to, SuccessorResult(successor, update_finger))
               actor.continue(state)
             }
             False -> {
@@ -141,11 +145,16 @@ fn start_node(id: Int) -> process.Subject(NodeMsg) {
               // forward the message to closest_preceding_finger
               process.send(
                 closest_preceding_finger.1,
-                FindSuccessor(id, reply_to),
+                FindSuccessor(id, reply_to, update_finger),
               )
               actor.continue(state)
             }
           }
+        }
+
+        Join(id, node) -> {
+          process.send(node.1, FindSuccessor(id, id, True))
+          actor.continue(state)
         }
 
         AddKey(key) -> {
@@ -201,8 +210,6 @@ fn set_finger_table(
       process.send(sub, SetFingers(list.reverse(finger_table)))
       // echo finger_table
       // process.send(list.last(finger_table).1, SetPredecessor(#(id, sub)))
-
-      
     }
     False -> {
       // exponential jump
@@ -257,6 +264,20 @@ fn add_keys(keys, nodes: List(#(Int, process.Subject(NodeMsg)))) {
     // you are looking to assign keys to the node after the greatest node. This has already been done
   }
 }
+
+// fn join(id, nodes) {
+//   let ids =
+//     list.map(nodes, fn(tuple) {
+//       let #(i, _) = tuple
+//       i
+//     })
+//   case list.contains(ids, id) {
+//     True -> Nil
+//     False -> {
+//       set_tables([id], nodes)
+//     }
+//   }
+// }
 
 fn make_ring(n: Int, k: Int) {
   let assert Ok(m) = int.power(2, 30.0)
