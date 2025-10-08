@@ -3,6 +3,7 @@ import gleam/float
 import gleam/int
 import gleam/io
 import gleam/list
+import gleam/option
 import gleam/otp/actor
 
 // import gleam/crypto
@@ -46,6 +47,15 @@ pub type NodeMsg {
   FindSuccessor(id: Int, reply_to: process.Subject(NodeMsg))
   SuccessorResult(result: #(Int, Int, process.Subject(NodeMsg)))
   SetFingers(finger_table: List(#(Int, process.Subject(NodeMsg))))
+  Join(
+    id: Int,
+    node: process.Subject(NodeMsg),
+    reply_to: process.Subject(NodeMsg),
+  )
+  Stablize(
+    pred_of_succ: option.Option(#(Int, process.Subject(NodeMsg))),
+    reply_to: #(Int, process.Subject(NodeMsg)),
+  )
   SetKeys(keys: List(Int))
   AddKey(key: Int)
   Join(node: process.Subject(NodeMsg))
@@ -53,6 +63,15 @@ pub type NodeMsg {
   FixFingers(self_subject: process.Subject(NodeMsg))
   // Notify(process.Subject(NodeMsg))
   // GetPredecessor(process.Subject(NodeMsg))
+  Notify(node: #(Int, process.Subject(NodeMsg)))
+  SetPredecessor(#(Int, process.Subject(NodeMsg)))
+  RequestID(
+    reply_to: #(Int, process.Subject(NodeMsg)),
+    node: process.Subject(NodeMsg),
+  )
+  // Ask the predecessor to send its id and then set predecessor
+  RequestPred(reply_to: #(Int, process.Subject(NodeMsg)))
+  // Ask the successor to send its predecessor and then stablize
   // PredecessorResponse(Maybe(process.Subject(NodeMsg)))
   ShutDown
 }
@@ -62,6 +81,7 @@ pub type NodeState {
     id: Int,
     file_keys: List(Int),
     // finger table should be sorted from closest to furthest in a clockwise manner
+    predecessor: option.Option(#(Int, process.Subject(NodeMsg))),
     finger_table: List(#(Int, process.Subject(NodeMsg))),
     requests_table: List(#(Int, RequestType)),
     //    boss: process.Subject(BossMsg),
@@ -97,7 +117,7 @@ fn fix_fingers(i: Int, self_subject: process.Subject(NodeMsg), state: NodeState)
 }
 
 fn start_node(id: Int) -> process.Subject(NodeMsg) {
-  let init = NodeState(id, [], [], [])
+  let init = NodeState(id, [], option.None, [], [])
 
   let builder =
     actor.new(init)
@@ -118,6 +138,16 @@ fn start_node(id: Int) -> process.Subject(NodeMsg) {
             })
           // echo [state.id, ..list.unzip(finger_table).0]
           actor.continue(NodeState(..state, finger_table: finger_table))
+        }
+
+        SetPredecessor(node) -> {
+          // io.println(
+          //   "Node "
+          //   <> int.to_string(state.id)
+          //   <> "'s predecessor is "
+          //   <> int.to_string(node.0),
+          // )
+          actor.continue(NodeState(..state, predecessor: option.Some(node)))
         }
 
         SetKeys(keys) -> {
@@ -230,7 +260,7 @@ fn start_node(id: Int) -> process.Subject(NodeMsg) {
           }
         }
 
-        FindSuccessor(id, reply_to) -> {
+        FindSuccessor(id, reply_to, update_finger) -> {
           let assert Ok(successor) = list.first(state.finger_table)
           let found =
             { { state.id < id } && { id < successor.0 } }
@@ -270,9 +300,90 @@ fn start_node(id: Int) -> process.Subject(NodeMsg) {
               // forward the message to closest_preceding_finger
               process.send(
                 closest_preceding_finger.1,
-                FindSuccessor(id, reply_to),
+                FindSuccessor(id, reply_to, update_finger),
               )
               actor.continue(state)
+            }
+          }
+        }
+
+        Join(id, node, reply_to) -> {
+          process.send(node, FindSuccessor(id, reply_to, True))
+          actor.continue(state)
+        }
+
+        Stablize(pred_of_succ, reply_to) -> {
+          let assert Ok(succ) = list.first(state.finger_table)
+          case pred_of_succ {
+            option.None -> {
+              process.send(succ.1, RequestPred(reply_to))
+              actor.continue(state)
+            }
+            option.Some(x) -> {
+              case x.0 - id > 0 && succ.0 - x.0 >= 0 {
+                False -> {
+                  io.println(
+                    "Node "
+                    <> int.to_string(id)
+                    <> " stablized! Successor unchanged.",
+                  )
+                  process.send(succ.1, Notify(reply_to))
+                  actor.continue(state)
+                }
+                True -> {
+                  let new_ft = case state.finger_table {
+                    [] -> []
+                    [_, ..tail] -> [x, ..tail]
+                  }
+                  io.println(
+                    "Node "
+                    <> int.to_string(id)
+                    <> " stablized! Successor changed. "
+                    <> int.to_string(succ.0)
+                    <> " -> "
+                    <> int.to_string(x.0),
+                  )
+                  process.send(x.1, Notify(reply_to))
+                  actor.continue(NodeState(..state, finger_table: new_ft))
+                }
+              }
+            }
+          }
+        }
+
+        Notify(node) -> {
+          case state.predecessor {
+            option.None -> {
+              io.println(
+                "Node "
+                <> int.to_string(id)
+                <> " is nodified. Its predecessor is set to node "
+                <> int.to_string(node.0),
+              )
+              actor.continue(NodeState(..state, predecessor: option.Some(node)))
+            }
+            option.Some(predecessor) -> {
+              case predecessor.0 - node.0 < 0 || state.id - node.0 < 0 {
+                True -> {
+                  io.println(
+                    "Node "
+                    <> int.to_string(id)
+                    <> " is nodified. Its predecessor is set to node "
+                    <> int.to_string(node.0),
+                  )
+                  actor.continue(
+                    NodeState(..state, predecessor: option.Some(node)),
+                  )
+                }
+                False -> {
+                  io.println(
+                    "Node "
+                    <> int.to_string(id)
+                    <> " is nodified. Its predecessor does not change.",
+                  )
+                  actor.continue(state)
+                }
+              }
             }
           }
         }
@@ -343,7 +454,7 @@ fn set_finger_table(
   id,
   i,
   m,
-  finger_table,
+  finger_table: List(#(Int, process.Subject(NodeMsg))),
   nodes: List(#(Int, process.Subject(NodeMsg))),
 ) {
   // set finger table of node with id=id
@@ -353,7 +464,15 @@ fn set_finger_table(
       // you are finished looking for jumps
       // send the table to the node now
       let assert Ok(sub) = list.key_find(nodes, id)
+      // echo id
+      // echo finger_table
+      case list.reverse(finger_table) {
+        [head, ..] -> process.send(head.1, SetPredecessor(#(id, sub)))
+        [] -> Nil
+      }
       process.send(sub, SetFingers(list.reverse(finger_table)))
+      // echo finger_table
+      // process.send(list.last(finger_table).1, SetPredecessor(#(id, sub)))
     }
     False -> {
       // exponential jump
