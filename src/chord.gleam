@@ -50,10 +50,12 @@ pub type NodeMsg {
     node: process.Subject(NodeMsg),
     reply_to: process.Subject(NodeMsg),
   )
+  Stablize()
   SetKeys(keys: List(Int))
   AddKey(key: Int)
   // Notify(process.Subject(NodeMsg))
   SetPredecessor(#(Int, process.Subject(NodeMsg)))
+  RequestID(reply_to: #(Int, process.Subject(NodeMsg)), node: process.Subject(NodeMsg)) // Ask the predecessor to send its id and then set predecessor
   // PredecessorResponse(Maybe(process.Subject(NodeMsg)))
   ShutDown
 }
@@ -119,8 +121,8 @@ fn start_node(id: Int) -> process.Subject(NodeMsg) {
                 <> "joined! Its successor is "
                 <> int.to_string(result.0),
               )
-              actor.continue(NodeState(..state, finger_table: [result]))
               // Set the successor for the newly joined node
+              actor.continue(NodeState(..state, finger_table: [result]))
             }
           }
         }
@@ -143,6 +145,7 @@ fn start_node(id: Int) -> process.Subject(NodeMsg) {
               )
               // send successor to reply_to
               process.send(reply_to, SuccessorResult(successor, update_finger))
+              process.send(reply_to, RequestID(successor, reply_to)) //
               actor.continue(state)
             }
             False -> {
@@ -174,10 +177,19 @@ fn start_node(id: Int) -> process.Subject(NodeMsg) {
           actor.continue(state)
         }
 
+        Stablize() -> {
+          actor.continue(state)
+        }
+
         AddKey(key) -> {
           actor.continue(
             NodeState(..state, file_keys: [key, ..state.file_keys]),
           )
+        }
+
+        RequestID(reply_to, node) -> {
+          process.send(reply_to.1, SetPredecessor(#(id, node)))
+          actor.continue(state)
         }
       }
     })
