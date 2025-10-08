@@ -1,3 +1,4 @@
+import gleam/bool
 import gleam/erlang/process
 import gleam/float
 import gleam/int
@@ -50,12 +51,21 @@ pub type NodeMsg {
     node: process.Subject(NodeMsg),
     reply_to: process.Subject(NodeMsg),
   )
-  Stablize()
+  Stablize(
+    pred_of_succ: option.Option(#(Int, process.Subject(NodeMsg))),
+    reply_to: #(Int, process.Subject(NodeMsg)),
+  )
   SetKeys(keys: List(Int))
   AddKey(key: Int)
   // Notify(process.Subject(NodeMsg))
   SetPredecessor(#(Int, process.Subject(NodeMsg)))
-  RequestID(reply_to: #(Int, process.Subject(NodeMsg)), node: process.Subject(NodeMsg)) // Ask the predecessor to send its id and then set predecessor
+  RequestID(
+    reply_to: #(Int, process.Subject(NodeMsg)),
+    node: process.Subject(NodeMsg),
+  )
+  // Ask the predecessor to send its id and then set predecessor
+  RequestPred(reply_to: #(Int, process.Subject(NodeMsg)))
+  // Ask the successor to send its predecessor and then stablize
   // PredecessorResponse(Maybe(process.Subject(NodeMsg)))
   ShutDown
 }
@@ -96,12 +106,12 @@ fn start_node(id: Int) -> process.Subject(NodeMsg) {
         }
 
         SetPredecessor(node) -> {
-          io.println(
-            "Node "
-            <> int.to_string(state.id)
-            <> "'s predecessor is "
-            <> int.to_string(node.0),
-          )
+          // io.println(
+          //   "Node "
+          //   <> int.to_string(state.id)
+          //   <> "'s predecessor is "
+          //   <> int.to_string(node.0),
+          // )
           actor.continue(NodeState(..state, predecessor: option.Some(node)))
         }
 
@@ -118,7 +128,7 @@ fn start_node(id: Int) -> process.Subject(NodeMsg) {
               io.println(
                 "New node "
                 <> int.to_string(id)
-                <> "joined! Its successor is "
+                <> " joined! Its successor is "
                 <> int.to_string(result.0),
               )
               // Set the successor for the newly joined node
@@ -145,7 +155,8 @@ fn start_node(id: Int) -> process.Subject(NodeMsg) {
               )
               // send successor to reply_to
               process.send(reply_to, SuccessorResult(successor, update_finger))
-              process.send(reply_to, RequestID(successor, reply_to)) //
+              process.send(reply_to, RequestID(successor, reply_to))
+              //
               actor.continue(state)
             }
             False -> {
@@ -177,8 +188,41 @@ fn start_node(id: Int) -> process.Subject(NodeMsg) {
           actor.continue(state)
         }
 
-        Stablize() -> {
-          actor.continue(state)
+        Stablize(pred_of_succ, reply_to) -> {
+          let assert Ok(succ) = list.first(state.finger_table)
+          case pred_of_succ {
+            option.None -> {
+              process.send(succ.1, RequestPred(reply_to))
+              actor.continue(state)
+            }
+            option.Some(x) -> {
+              case x.0 - id > 0 && succ.0 - x.0 >= 0 {
+                False -> {
+                  io.println(
+                    "Node "
+                    <> int.to_string(id)
+                    <> " stablized! Successor unchanged.",
+                  )
+                  actor.continue(state)
+                }
+                True -> {
+                  let new_ft = case state.finger_table {
+                    [] -> []
+                    [_, ..tail] -> [x, ..tail]
+                  }
+                  io.println(
+                    "Node "
+                    <> int.to_string(id)
+                    <> " stablized! Successor changed. "
+                    <> int.to_string(succ.0)
+                    <> " -> "
+                    <> int.to_string(x.0),
+                  )
+                  actor.continue(NodeState(..state, finger_table: new_ft))
+                }
+              }
+            }
+          }
         }
 
         AddKey(key) -> {
@@ -189,6 +233,12 @@ fn start_node(id: Int) -> process.Subject(NodeMsg) {
 
         RequestID(reply_to, node) -> {
           process.send(reply_to.1, SetPredecessor(#(id, node)))
+          actor.continue(state)
+        }
+
+        RequestPred(reply_to) -> {
+          // let assert Ok(rslt) = list.first(finger_table)
+          process.send(reply_to.1, Stablize(state.predecessor, reply_to))
           actor.continue(state)
         }
       }
@@ -294,20 +344,6 @@ fn add_keys(keys, nodes: List(#(Int, process.Subject(NodeMsg)))) {
   }
 }
 
-// fn join(id, nodes) {
-//   let ids =
-//     list.map(nodes, fn(tuple) {
-//       let #(i, _) = tuple
-//       i
-//     })
-//   case list.contains(ids, id) {
-//     True -> Nil
-//     False -> {
-//       set_tables([id], nodes)
-//     }
-//   }
-// }
-
 fn make_ring(n: Int, k: Int) {
   let assert Ok(m) = int.power(2, 30.0)
   // generate k random integers on range m as the keys
@@ -350,5 +386,13 @@ pub fn main() {
   let new_node = start_node(new_id)
 
   process.send(n.1, Join(new_id, n.1, new_node))
+  process.sleep(1000)
+  process.send(n.1, Stablize(option.None, n))
+  process.sleep(1000)
+
+  let new_node_2 = start_node(n.0 + 1)
+  process.send(n.1, Join(n.0 + 1, n.1, new_node_2))
+  process.sleep(1000)
+  process.send(n.1, Stablize(option.None, n))
   process.sleep(1000)
 }
