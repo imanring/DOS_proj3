@@ -38,10 +38,18 @@ fn find_closest_preceding_finger(
 
 pub type NodeMsg {
   // Find the successor of id
-  FindSuccessor(id: Int, reply_to: process.Subject(NodeMsg), update_finger: Bool)
+  FindSuccessor(
+    id: Int,
+    reply_to: process.Subject(NodeMsg),
+    update_finger: Bool,
+  )
   SuccessorResult(result: #(Int, process.Subject(NodeMsg)), update_finger: Bool)
   SetFingers(finger_table: List(#(Int, process.Subject(NodeMsg))))
-  Join(id: Int, node: #(Int, process.Subject(NodeMsg)))
+  Join(
+    id: Int,
+    node: process.Subject(NodeMsg),
+    reply_to: process.Subject(NodeMsg),
+  )
   SetKeys(keys: List(Int))
   AddKey(key: Int)
   // Notify(process.Subject(NodeMsg))
@@ -89,7 +97,7 @@ fn start_node(id: Int) -> process.Subject(NodeMsg) {
           io.println(
             "Node "
             <> int.to_string(state.id)
-            <> "'s predecessor is"
+            <> "'s predecessor is "
             <> int.to_string(node.0),
           )
           actor.continue(NodeState(..state, predecessor: option.Some(node)))
@@ -104,7 +112,16 @@ fn start_node(id: Int) -> process.Subject(NodeMsg) {
           io.println("Got result! The Id is " <> int.to_string(result.0))
           case update_finger {
             False -> actor.continue(state)
-            True -> actor.continue(NodeState(..state, finger_table: [result]))  // Set the successor for the newly joined node
+            True -> {
+              io.println(
+                "New node "
+                <> int.to_string(id)
+                <> "joined! Its successor is "
+                <> int.to_string(result.0),
+              )
+              actor.continue(NodeState(..state, finger_table: [result]))
+              // Set the successor for the newly joined node
+            }
           }
         }
 
@@ -152,8 +169,8 @@ fn start_node(id: Int) -> process.Subject(NodeMsg) {
           }
         }
 
-        Join(id, node) -> {
-          process.send(node.1, FindSuccessor(id, id, True))
+        Join(id, node, reply_to) -> {
+          process.send(node, FindSuccessor(id, reply_to, True))
           actor.continue(state)
         }
 
@@ -311,8 +328,15 @@ pub fn main() {
   let nodes = make_ring(128, 512)
   let assert Ok(n) = list.first(nodes)
   echo n.0
-  process.send(n.1, FindSuccessor(300_000_000, n.1))
-  process.sleep(1000)
-  process.send(n.1, FindSuccessor(10, n.1))
+  // process.send(n.1, FindSuccessor(300_000_000, n.1, False))
+  // process.sleep(1000)
+  // process.send(n.1, FindSuccessor(10, n.1, False))
+  // process.sleep(1000)
+
+  let assert Ok(m) = int.power(2, 30.0)
+  let new_id = int.random(float.round(m))
+  let new_node = start_node(new_id)
+
+  process.send(n.1, Join(new_id, n.1, new_node))
   process.sleep(1000)
 }
