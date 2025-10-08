@@ -6,8 +6,6 @@ import gleam/list
 import gleam/option
 import gleam/otp/actor
 
-// import gleam/crypto
-
 fn find_closest_preceding_finger(
   n: Int,
   id: Int,
@@ -21,12 +19,7 @@ fn find_closest_preceding_finger(
         0 -> Ok(head)
         _ -> {
           // if finger_id is between n and id on the circle in a clockwise way
-          case
-            {
-              { { n < finger_id } && { finger_id < id } }
-              || { { n > id } && { { n < finger_id } || { finger_id < id } } }
-            }
-          {
+          case range_in(finger_id, n, id) {
             True -> Ok(head)
             False -> find_closest_preceding_finger(n, id, tail)
           }
@@ -34,6 +27,11 @@ fn find_closest_preceding_finger(
       }
     }
   }
+}
+
+// is x in (a,b)
+fn range_in(x, a, b) {
+  { { { a < x } && { x < b } } || { { a > b } && { { a < x } || { x < b } } } }
 }
 
 pub type RequestType {
@@ -45,34 +43,28 @@ pub type RequestType {
 pub type NodeMsg {
   // Find the successor of id
   FindSuccessor(id: Int, reply_to: process.Subject(NodeMsg))
+  // process the result of finding the successor of id
   SuccessorResult(result: #(Int, Int, process.Subject(NodeMsg)))
-  SetFingers(finger_table: List(#(Int, process.Subject(NodeMsg))))
-  Join(
-    id: Int,
-    node: process.Subject(NodeMsg),
-    reply_to: process.Subject(NodeMsg),
-  )
+  // verifies the successor and tells the successor about itself
   Stablize(
     pred_of_succ: option.Option(#(Int, process.Subject(NodeMsg))),
     reply_to: #(Int, process.Subject(NodeMsg)),
   )
+  // join the network by asking an existing node to find your successor
+  Join(node: process.Subject(NodeMsg))
+  // periodically verify the finger table
+  FixFingers(self_subject: process.Subject(NodeMsg))
+  // notify a node that you might be its predecessor
+  Notify(node: #(Int, process.Subject(NodeMsg)))
+  // set the finger table
+  SetFingers(finger_table: List(#(Int, process.Subject(NodeMsg))))
+  // set file keys table
   SetKeys(keys: List(Int))
   AddKey(key: Int)
-  Join(node: process.Subject(NodeMsg))
   SearchFileKey(key: Int, self_subject: process.Subject(NodeMsg))
-  FixFingers(self_subject: process.Subject(NodeMsg))
-  // Notify(process.Subject(NodeMsg))
-  // GetPredecessor(process.Subject(NodeMsg))
-  Notify(node: #(Int, process.Subject(NodeMsg)))
   SetPredecessor(#(Int, process.Subject(NodeMsg)))
-  RequestID(
-    reply_to: #(Int, process.Subject(NodeMsg)),
-    node: process.Subject(NodeMsg),
-  )
   // Ask the predecessor to send its id and then set predecessor
   RequestPred(reply_to: #(Int, process.Subject(NodeMsg)))
-  // Ask the successor to send its predecessor and then stablize
-  // PredecessorResponse(Maybe(process.Subject(NodeMsg)))
   ShutDown
 }
 
@@ -116,317 +108,303 @@ fn fix_fingers(i: Int, self_subject: process.Subject(NodeMsg), state: NodeState)
   }
 }
 
-fn start_node(id: Int) -> process.Subject(NodeMsg) {
-  let init = NodeState(id, [], option.None, [], [])
+fn handle_messages(state: NodeState, msg: NodeMsg) {
+  // handle messages
+  case msg {
+    ShutDown -> actor.stop()
 
-  let builder =
-    actor.new(init)
-    |> actor.on_message(fn(state, msg) {
-      case msg {
-        ShutDown -> actor.stop()
+    SetFingers(finger_table) -> {
+      // sort fingers
+      let assert Ok(m) = int.power(2, 30.0)
+      let m = float.round(m)
+      let finger_table =
+        list.sort(finger_table, fn(a, b) {
+          int.compare({ a.0 + m - state.id } % m, { b.0 + m - state.id } % m)
+        })
+      // echo [state.id, ..list.unzip(finger_table).0]
+      actor.continue(NodeState(..state, finger_table: finger_table))
+    }
 
-        SetFingers(finger_table) -> {
-          // sort fingers
-          let assert Ok(m) = int.power(2, 30.0)
-          let m = float.round(m)
-          let finger_table =
-            list.sort(finger_table, fn(a, b) {
-              int.compare(
-                { a.0 + m - state.id } % m,
-                { b.0 + m - state.id } % m,
+    SetPredecessor(node) -> {
+      // io.println(
+      //   "Node "
+      //   <> int.to_string(state.id)
+      //   <> "'s predecessor is "
+      //   <> int.to_string(node.0),
+      // )
+      actor.continue(NodeState(..state, predecessor: option.Some(node)))
+    }
+
+    SetKeys(keys) -> {
+      // echo [state.id, ..keys]
+      actor.continue(NodeState(..state, file_keys: keys))
+    }
+
+    SuccessorResult(result) -> {
+      //io.println("Got result! The Id is " <> int.to_string(result.0))
+      case list.key_find(state.requests_table, result.0) {
+        Ok(rslt) -> {
+          // remove from requests table
+          let new_request_table =
+            list.filter(state.requests_table, fn(x) { x != #(result.0, rslt) })
+          case rslt {
+            SetSuccessor -> {
+              // set successor to result
+              let new_finger_table = case state.finger_table {
+                [] -> [#(result.1, result.2)]
+                [_first, ..rest] -> [#(result.1, result.2), ..rest]
+              }
+              // remove from requests table and set successor
+              actor.continue(
+                NodeState(
+                  ..state,
+                  requests_table: new_request_table,
+                  finger_table: new_finger_table,
+                ),
               )
-            })
-          // echo [state.id, ..list.unzip(finger_table).0]
-          actor.continue(NodeState(..state, finger_table: finger_table))
-        }
-
-        SetPredecessor(node) -> {
-          // io.println(
-          //   "Node "
-          //   <> int.to_string(state.id)
-          //   <> "'s predecessor is "
-          //   <> int.to_string(node.0),
-          // )
-          actor.continue(NodeState(..state, predecessor: option.Some(node)))
-        }
-
-        SetKeys(keys) -> {
-          // echo [state.id, ..keys]
-          actor.continue(NodeState(..state, file_keys: keys))
-        }
-
-        SuccessorResult(result) -> {
-          //io.println("Got result! The Id is " <> int.to_string(result.0))
-          case list.key_find(state.requests_table, result.0) {
-            Ok(rslt) -> {
+            }
+            FindFileKey -> {
+              io.println(
+                "Node "
+                <> int.to_string(state.id)
+                <> " received the file key "
+                <> int.to_string(result.0)
+                <> ".",
+              )
               // remove from requests table
-              let new_request_table =
-                list.filter(state.requests_table, fn(x) {
-                  x != #(result.0, rslt)
-                })
-              case rslt {
-                SetSuccessor -> {
-                  // set successor to result
-                  let new_finger_table = case state.finger_table {
-                    [] -> [#(result.1, result.2)]
-                    [_first, ..rest] -> [#(result.1, result.2), ..rest]
+              actor.continue(
+                NodeState(..state, requests_table: new_request_table),
+              )
+            }
+            ReplaceFinger(finger_id) -> {
+              // replace finger with result
+              let new_finger_table = case finger_id {
+                -1 -> {
+                  // add it to the table if it isn't already there
+                  case
+                    list.contains(state.finger_table, #(result.1, result.2))
+                  {
+                    True -> state.finger_table
+                    False -> {
+                      io.println(
+                        "Adding to Node "
+                        <> int.to_string(state.id)
+                        <> "'s finger table.",
+                      )
+                      [#(result.1, result.2), ..state.finger_table]
+                    }
                   }
-                  // remove from requests table and set successor
-                  actor.continue(
-                    NodeState(
-                      ..state,
-                      requests_table: new_request_table,
-                      finger_table: new_finger_table,
-                    ),
-                  )
                 }
-                FindFileKey -> {
+                _ -> {
                   io.println(
                     "Node "
                     <> int.to_string(state.id)
-                    <> " received the file key "
-                    <> int.to_string(result.0)
+                    <> " replacing finger "
+                    <> int.to_string(finger_id)
+                    <> " with "
+                    <> int.to_string(result.1)
                     <> ".",
                   )
-                  // remove from requests table
-                  actor.continue(
-                    NodeState(..state, requests_table: new_request_table),
-                  )
-                }
-                ReplaceFinger(finger_id) -> {
-                  // replace finger with result
-                  let new_finger_table = case finger_id {
-                    -1 -> {
-                      // add it to the table if it isn't already there
-                      case
-                        list.contains(state.finger_table, #(result.1, result.2))
-                      {
-                        True -> state.finger_table
-                        False -> {
-                          io.println(
-                            "Adding to Node "
-                            <> int.to_string(state.id)
-                            <> "'s finger table.",
-                          )
-                          [#(result.1, result.2), ..state.finger_table]
-                        }
-                      }
+                  // replace the finger with finger_id
+                  list.map(state.finger_table, fn(x) {
+                    case x.0 == finger_id {
+                      True -> #(result.1, result.2)
+                      False -> x
                     }
-                    _ -> {
-                      io.println(
-                        "Node "
-                        <> int.to_string(state.id)
-                        <> " replacing finger "
-                        <> int.to_string(finger_id)
-                        <> " with "
-                        <> int.to_string(result.1)
-                        <> ".",
-                      )
-                      // replace the finger with finger_id
-                      list.map(state.finger_table, fn(x) {
-                        case x.0 == finger_id {
-                          True -> #(result.1, result.2)
-                          False -> x
-                        }
-                      })
-                    }
-                  }
-                  // sort fingers
-                  let assert Ok(m) = int.power(2, 30.0)
-                  let m = float.round(m)
-                  let new_finger_table =
-                    list.sort(new_finger_table, fn(a, b) {
-                      int.compare(
-                        { a.0 + m - state.id } % m,
-                        { b.0 + m - state.id } % m,
-                      )
-                    })
-                  echo list.unzip(new_finger_table).0
-                  // remove from requests table and set successor
-                  actor.continue(
-                    NodeState(
-                      ..state,
-                      requests_table: new_request_table,
-                      finger_table: new_finger_table,
-                    ),
-                  )
+                  })
                 }
               }
-            }
-            _ -> {
-              io.println("I didn't know about that request!")
-              actor.continue(state)
+              // sort fingers
+              let assert Ok(m) = int.power(2, 30.0)
+              let m = float.round(m)
+              let new_finger_table =
+                list.sort(new_finger_table, fn(a, b) {
+                  int.compare(
+                    { a.0 + m - state.id } % m,
+                    { b.0 + m - state.id } % m,
+                  )
+                })
+              // echo list.unzip(new_finger_table).0
+              // remove from requests table and set successor
+              actor.continue(
+                NodeState(
+                  ..state,
+                  requests_table: new_request_table,
+                  finger_table: new_finger_table,
+                ),
+              )
             }
           }
         }
-
-        FindSuccessor(id, reply_to, update_finger) -> {
-          let assert Ok(successor) = list.first(state.finger_table)
-          let found =
-            { { state.id < id } && { id < successor.0 } }
-            || {
-              { state.id > successor.0 }
-              && { { state.id < id } || { id < successor.0 } }
-            }
-          case found {
-            True -> {
-              //io.println(
-              //  "node "
-              //  <> int.to_string(state.id)
-              //  <> " found successor of "
-              //  <> int.to_string(id),
-              //)
-              // send successor to reply_to
-              process.send(
-                reply_to,
-                SuccessorResult(#(id, successor.0, successor.1)),
-              )
-              actor.continue(state)
-            }
-            False -> {
-              let assert Ok(closest_preceding_finger) =
-                find_closest_preceding_finger(
-                  state.id,
-                  id,
-                  list.reverse(state.finger_table),
-                )
-              //io.println(
-              //  "node "
-              //  <> int.to_string(state.id)
-              //  <> " forwarding to finger "
-              //  <> int.to_string(closest_preceding_finger.0),
-              //)
-              process.sleep(10)
-              // forward the message to closest_preceding_finger
-              process.send(
-                closest_preceding_finger.1,
-                FindSuccessor(id, reply_to, update_finger),
-              )
-              actor.continue(state)
-            }
-          }
-        }
-
-        Join(id, node, reply_to) -> {
-          process.send(node, FindSuccessor(id, reply_to, True))
+        _ -> {
+          io.println("I didn't know about that request!")
           actor.continue(state)
         }
+      }
+    }
 
-        Stablize(pred_of_succ, reply_to) -> {
-          let assert Ok(succ) = list.first(state.finger_table)
-          case pred_of_succ {
-            option.None -> {
-              process.send(succ.1, RequestPred(reply_to))
+    FindSuccessor(id, reply_to) -> {
+      let assert Ok(successor) = list.first(state.finger_table)
+      let found = range_in(id, state.id, successor.0) || id == successor.0
+      case found {
+        True -> {
+          //io.println(
+          //  "node "
+          //  <> int.to_string(state.id)
+          //  <> " found successor of "
+          //  <> int.to_string(id),
+          //)
+          // send successor to reply_to
+          process.send(
+            reply_to,
+            SuccessorResult(#(id, successor.0, successor.1)),
+          )
+          actor.continue(state)
+        }
+        False -> {
+          let assert Ok(closest_preceding_finger) =
+            find_closest_preceding_finger(
+              state.id,
+              id,
+              list.reverse(state.finger_table),
+            )
+          //io.println(
+          //  "node "
+          //  <> int.to_string(state.id)
+          //  <> " forwarding to finger "
+          //  <> int.to_string(closest_preceding_finger.0),
+          //)
+          // forward the message to closest_preceding_finger
+          process.send(closest_preceding_finger.1, FindSuccessor(id, reply_to))
+          actor.continue(state)
+        }
+      }
+    }
+
+    Stablize(pred_of_succ, reply_to) -> {
+      let assert Ok(succ) = list.first(state.finger_table)
+      case pred_of_succ {
+        option.None -> {
+          process.send(succ.1, RequestPred(reply_to))
+          actor.continue(state)
+        }
+        option.Some(x) -> {
+          case range_in(x.0, state.id, succ.0) {
+            False -> {
+              io.println(
+                "Node "
+                <> int.to_string(state.id)
+                <> " stablized! Successor unchanged.",
+              )
+              process.send(succ.1, Notify(reply_to))
               actor.continue(state)
             }
-            option.Some(x) -> {
-              case x.0 - id > 0 && succ.0 - x.0 >= 0 {
-                False -> {
-                  io.println(
-                    "Node "
-                    <> int.to_string(id)
-                    <> " stablized! Successor unchanged.",
-                  )
-                  process.send(succ.1, Notify(reply_to))
-                  actor.continue(state)
-                }
-                True -> {
-                  let new_ft = case state.finger_table {
-                    [] -> []
-                    [_, ..tail] -> [x, ..tail]
-                  }
-                  io.println(
-                    "Node "
-                    <> int.to_string(id)
-                    <> " stablized! Successor changed. "
-                    <> int.to_string(succ.0)
-                    <> " -> "
-                    <> int.to_string(x.0),
-                  )
-                  process.send(x.1, Notify(reply_to))
-                  actor.continue(NodeState(..state, finger_table: new_ft))
-                }
+            True -> {
+              let new_ft = case state.finger_table {
+                [] -> []
+                [_, ..tail] -> [x, ..tail]
               }
+              io.println(
+                "Node "
+                <> int.to_string(state.id)
+                <> " stablized! Successor changed. "
+                <> int.to_string(succ.0)
+                <> " -> "
+                <> int.to_string(x.0),
+              )
+              process.send(x.1, Notify(reply_to))
+              actor.continue(NodeState(..state, finger_table: new_ft))
             }
           }
         }
+      }
+    }
 
-        Notify(node) -> {
-          case state.predecessor {
-            option.None -> {
+    Notify(node) -> {
+      case state.predecessor {
+        option.None -> {
+          io.println(
+            "Node "
+            <> int.to_string(state.id)
+            <> " is nodified. Its predecessor is set to node "
+            <> int.to_string(node.0),
+          )
+          actor.continue(NodeState(..state, predecessor: option.Some(node)))
+        }
+        option.Some(predecessor) -> {
+          case range_in(node.0, predecessor.0, state.id) {
+            True -> {
               io.println(
                 "Node "
-                <> int.to_string(id)
+                <> int.to_string(state.id)
                 <> " is nodified. Its predecessor is set to node "
                 <> int.to_string(node.0),
               )
               actor.continue(NodeState(..state, predecessor: option.Some(node)))
             }
-            option.Some(predecessor) -> {
-              case predecessor.0 - node.0 < 0 || state.id - node.0 < 0 {
-                True -> {
-                  io.println(
-                    "Node "
-                    <> int.to_string(id)
-                    <> " is nodified. Its predecessor is set to node "
-                    <> int.to_string(node.0),
-                  )
-                  actor.continue(
-                    NodeState(..state, predecessor: option.Some(node)),
-                  )
-                }
-                False -> {
-                  io.println(
-                    "Node "
-                    <> int.to_string(id)
-                    <> " is nodified. Its predecessor does not change.",
-                  )
-                  actor.continue(state)
-                }
-              }
+            False -> {
+              io.println(
+                "Node "
+                <> int.to_string(state.id)
+                <> " is nodified. Its predecessor does not change.",
+              )
+              actor.continue(state)
             }
           }
         }
-
-        AddKey(key) -> {
-          actor.continue(
-            NodeState(..state, file_keys: [key, ..state.file_keys]),
-          )
-        }
-
-        Join(node) -> {
-          process.send(node, FindSuccessor(state.id, node))
-          actor.continue(
-            NodeState(..state, requests_table: [
-              #(state.id, SetSuccessor),
-              ..state.requests_table
-            ]),
-          )
-        }
-
-        SearchFileKey(key, self_subject) -> {
-          // find the successor of key
-          process.send(self_subject, FindSuccessor(key, self_subject))
-          actor.continue(
-            NodeState(..state, requests_table: [
-              #(key, FindFileKey),
-              ..state.requests_table
-            ]),
-          )
-        }
-
-        FixFingers(self_subject) -> {
-          // fix fingers
-          let new_requests = fix_fingers(0, self_subject, state)
-          actor.continue(
-            NodeState(
-              ..state,
-              requests_table: list.append(new_requests, state.requests_table),
-            ),
-          )
-        }
       }
-    })
+    }
+
+    AddKey(key) -> {
+      actor.continue(NodeState(..state, file_keys: [key, ..state.file_keys]))
+    }
+
+    Join(node) -> {
+      process.send(node, FindSuccessor(state.id, node))
+      actor.continue(
+        NodeState(..state, requests_table: [
+          #(state.id, SetSuccessor),
+          ..state.requests_table
+        ]),
+      )
+    }
+
+    SearchFileKey(key, self_subject) -> {
+      // find the successor of key
+      process.send(self_subject, FindSuccessor(key, self_subject))
+      actor.continue(
+        NodeState(..state, requests_table: [
+          #(key, FindFileKey),
+          ..state.requests_table
+        ]),
+      )
+    }
+
+    FixFingers(self_subject) -> {
+      // fix fingers
+      let new_requests = fix_fingers(0, self_subject, state)
+      actor.continue(
+        NodeState(
+          ..state,
+          requests_table: list.append(new_requests, state.requests_table),
+        ),
+      )
+    }
+
+    RequestPred(reply_to) -> {
+      // let assert Ok(rslt) = list.first(finger_table)
+      process.send(reply_to.1, Stablize(state.predecessor, reply_to))
+      actor.continue(state)
+    }
+  }
+}
+
+fn start_node(id: Int) -> process.Subject(NodeMsg) {
+  let init = NodeState(id, [], option.None, [], [])
+
+  let builder =
+    actor.new(init)
+    |> actor.on_message(handle_messages)
 
   let assert Ok(started) = actor.start(builder)
   started.data
@@ -557,8 +535,13 @@ fn make_ring(n: Int, k: Int) {
 }
 
 pub fn main() {
-  let nodes = make_ring(512, 1024)
+  let nodes = make_ring(128, 512)
   let assert Ok(n) = list.first(nodes)
+  let assert Ok(m) = int.power(2, 30.0)
+  let new_id = int.random(float.round(m))
+  let new_node = start_node(new_id)
+  process.send(new_node, Join(n.1))
+  process.send(new_node, Stablize(option.None, #(new_id, new_node)))
   process.send(n.1, FixFingers(n.1))
   // echo n.0
   process.send(n.1, SearchFileKey(300_000_000, n.1))
