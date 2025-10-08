@@ -57,7 +57,7 @@ pub type NodeMsg {
   )
   SetKeys(keys: List(Int))
   AddKey(key: Int)
-  // Notify(process.Subject(NodeMsg))
+  Notify(node: #(Int, process.Subject(NodeMsg)))
   SetPredecessor(#(Int, process.Subject(NodeMsg)))
   RequestID(
     reply_to: #(Int, process.Subject(NodeMsg)),
@@ -203,6 +203,7 @@ fn start_node(id: Int) -> process.Subject(NodeMsg) {
                     <> int.to_string(id)
                     <> " stablized! Successor unchanged.",
                   )
+                  process.send(succ.1, Notify(reply_to))
                   actor.continue(state)
                 }
                 True -> {
@@ -218,7 +219,45 @@ fn start_node(id: Int) -> process.Subject(NodeMsg) {
                     <> " -> "
                     <> int.to_string(x.0),
                   )
+                  process.send(x.1, Notify(reply_to))
                   actor.continue(NodeState(..state, finger_table: new_ft))
+                }
+              }
+            }
+          }
+        }
+
+        Notify(node) -> {
+          case state.predecessor {
+            option.None -> {
+              io.println(
+                "Node "
+                <> int.to_string(id)
+                <> " is nodified. Its predecessor is set to node "
+                <> int.to_string(node.0),
+              )
+              actor.continue(NodeState(..state, predecessor: option.Some(node)))
+            }
+            option.Some(predecessor) -> {
+              case predecessor.0 - node.0 < 0 || state.id - node.0 < 0 {
+                True -> {
+                  io.println(
+                    "Node "
+                    <> int.to_string(id)
+                    <> " is nodified. Its predecessor is set to node "
+                    <> int.to_string(node.0),
+                  )
+                  actor.continue(
+                    NodeState(..state, predecessor: option.Some(node)),
+                  )
+                }
+                False -> {
+                  io.println(
+                    "Node "
+                    <> int.to_string(id)
+                    <> " is nodified. Its predecessor does not change.",
+                  )
+                  actor.continue(state)
                 }
               }
             }
