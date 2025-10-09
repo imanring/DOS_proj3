@@ -12,7 +12,7 @@ r = np.loadtxt('hops.txt')
 r.mean()
 ```
 
-The resulting average number of hops was `5.8715`, which is consistent with the logorithmic time expectation.
+The resulting average number of hops was `5.8715`, which is consistent with the logorithmic time expectation. I ran one with 10,000 nodes and got 6.5146 average hops.
 
 We initiate the network. An example run with the following main function was run where we had more print statements.
 
