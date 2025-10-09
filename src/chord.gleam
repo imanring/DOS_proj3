@@ -1,6 +1,3 @@
-//// Initialization of network
-////// Maintenance of network
-
 import gleam/erlang/process
 import gleam/float
 import gleam/int
@@ -424,6 +421,8 @@ fn start_node(id: Int) -> process.Subject(NodeMsg) {
   started.data
 }
 
+// ############### Initialization of network ###############
+
 fn gen_rand(i, t, m, l) {
   // generate t random integers between 0 and m
   case i > t {
@@ -547,6 +546,8 @@ fn make_ring(n: Int, k: Int) {
   add_keys(keys, nodes)
   nodes
 }
+
+// ############### Maintenance of network ###############
 
 fn fix_all(nodes: List(#(Int, process.Subject(NodeMsg)))) {
   case nodes {
