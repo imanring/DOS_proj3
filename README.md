@@ -1,24 +1,34 @@
-# chord
+# Chord
 
-[![Package Version](https://img.shields.io/hexpm/v/chord)](https://hex.pm/packages/chord)
-[![Hex Docs](https://img.shields.io/badge/hex-docs-ffaff3)](https://hexdocs.pm/chord/)
+We create a chord network. We use random integers on a very large domain for the ids because for this simulation, this is essentially the same as a hash function.
 
-```sh
-gleam add chord@1
+Importantly, our implementation is asynchronous, while the pseudo code in the paper is synchronous. This is done by creating a requests table where nodes store the requests that they have sent out and are waiting for a reply on. When they receive a reply, they pop the result from the table and continue with what they were doing. In find successor, nodes only pass the message on without waiting for a reply, because the node that finds the result will send it back to the original requestor. This implementation enables parallel execution and avoids the deadlocks that could easily happen in the original Chord pseudo code, but it is much easier to track what each person is searching for making this scheme less private.
+
+We initiate the network. An example run with the following main function was run.
+
 ```
-```gleam
-import chord
+let nodes = make_ring(16, 512)
+echo list.unzip(nodes).0
+let assert Ok(n) = list.first(nodes)
 
-pub fn main() -> Nil {
-  // TODO: An example of the project in use
-}
+io.println("Searching for file key 1000")
+process.send(n.1, SearchFileKey(1000, n.1))
+process.sleep(100)
+
+let nodes = [add_node(n), ..nodes]
+let nodes = [add_node(n), ..nodes]
+let nodes = [add_node(n), ..nodes]
+let nodes = [add_node(n), ..nodes]
+process.sleep(100)
+
+fix_all(nodes)
+process.sleep(100)
+// echo n.0
+io.println("Searching for file key 300000000")
+process.send(n.1, SearchFileKey(300_000_000, n.1))
+process.send(n.1, SearchFileKey(1000, n.1))
+process.send(n.1, SearchFileKey(1_000_000_000, n.1))
+process.sleep(1000)
 ```
 
-Further documentation can be found at <https://hexdocs.pm/chord>.
-
-## Development
-
-```sh
-gleam run   # Run the project
-gleam test  # Run the tests
-```
+The results are shown in `output.txt`. This shows the ring being traversed in logorithmic time, new nodes being added to the network with finger tables, successors and predecessors being updated.

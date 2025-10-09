@@ -1,3 +1,6 @@
+//// Initialization of network
+////// Maintenance of network
+
 import gleam/erlang/process
 import gleam/float
 import gleam/int
@@ -5,34 +8,6 @@ import gleam/io
 import gleam/list
 import gleam/option
 import gleam/otp/actor
-
-fn find_closest_preceding_finger(
-  n: Int,
-  id: Int,
-  finger_table: List(#(Int, process.Subject(NodeMsg))),
-) {
-  case finger_table {
-    [] -> Error(Nil)
-    [head, ..tail] -> {
-      let #(finger_id, _finger_node) = head
-      case list.length(tail) {
-        0 -> Ok(head)
-        _ -> {
-          // if finger_id is between n and id on the circle in a clockwise way
-          case range_in(finger_id, n, id) {
-            True -> Ok(head)
-            False -> find_closest_preceding_finger(n, id, tail)
-          }
-        }
-      }
-    }
-  }
-}
-
-// is x in (a,b)
-fn range_in(x, a, b) {
-  { { { a < x } && { x < b } } || { { a > b } && { { a < x } || { x < b } } } }
-}
 
 pub type RequestType {
   SetSuccessor(self_node: #(Int, process.Subject(NodeMsg)))
@@ -110,6 +85,34 @@ fn fix_fingers(i: Int, self_subject: process.Subject(NodeMsg), state: NodeState)
       [new_request, ..other_requests]
     }
   }
+}
+
+fn find_closest_preceding_finger(
+  n: Int,
+  id: Int,
+  finger_table: List(#(Int, process.Subject(NodeMsg))),
+) {
+  case finger_table {
+    [] -> Error(Nil)
+    [head, ..tail] -> {
+      let #(finger_id, _finger_node) = head
+      case list.length(tail) {
+        0 -> Ok(head)
+        _ -> {
+          // if finger_id is between n and id on the circle in a clockwise way
+          case range_in(finger_id, n, id) {
+            True -> Ok(head)
+            False -> find_closest_preceding_finger(n, id, tail)
+          }
+        }
+      }
+    }
+  }
+}
+
+// is x in (a,b)
+fn range_in(x, a, b) {
+  { { { a < x } && { x < b } } || { { a > b } && { { a < x } || { x < b } } } }
 }
 
 fn handle_messages(state: NodeState, msg: NodeMsg) {
