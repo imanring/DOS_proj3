@@ -1,3 +1,4 @@
+import argv
 import gleam/erlang/process
 import gleam/float
 import gleam/int
@@ -14,9 +15,9 @@ pub type RequestType {
 
 pub type NodeMsg {
   // Find the successor of id
-  FindSuccessor(id: Int, reply_to: process.Subject(NodeMsg))
+  FindSuccessor(hops: Int, id: Int, reply_to: process.Subject(NodeMsg))
   // process the result of finding the successor of id
-  SuccessorResult(result: #(Int, Int, process.Subject(NodeMsg)))
+  SuccessorResult(hops: Int, result: #(Int, Int, process.Subject(NodeMsg)))
   // verifies the successor and tells the successor about itself
   Stablize(
     pred_of_succ: option.Option(#(Int, process.Subject(NodeMsg))),
@@ -62,7 +63,7 @@ fn fix_fingers(i: Int, self_subject: process.Subject(NodeMsg), state: NodeState)
   let m = float.round(m)
   let assert Ok(jump) = int.power(2, int.to_float(i))
   let id = { state.id + float.round(jump) } % m
-  process.send(self_subject, FindSuccessor(id, self_subject))
+  process.send(self_subject, FindSuccessor(0, id, self_subject))
   // add to requests table
   // only replace finger if it is between self_id + 2^i % m and self_id + 2^(i+1) % m
   let new_request = case
@@ -144,8 +145,7 @@ fn handle_messages(state: NodeState, msg: NodeMsg) {
       actor.continue(NodeState(..state, file_keys: keys))
     }
 
-    SuccessorResult(result) -> {
-      //io.println("Got result! The Id is " <> int.to_string(result.0))
+    SuccessorResult(hops, result) -> {
       // look up in requests table
       case list.key_find(state.requests_table, result.0) {
         Ok(rslt) -> {
@@ -171,13 +171,8 @@ fn handle_messages(state: NodeState, msg: NodeMsg) {
               )
             }
             FindFileKey -> {
-              io.println(
-                "Node "
-                <> int.to_string(state.id)
-                <> " received the file key "
-                <> int.to_string(result.0)
-                <> ".",
-              )
+              //io.println("Hops: " <> int.to_string(hops))
+              io.println(int.to_string(hops))
               // remove from requests table
               actor.continue(
                 NodeState(..state, requests_table: new_request_table),
@@ -193,27 +188,27 @@ fn handle_messages(state: NodeState, msg: NodeMsg) {
                   {
                     True -> state.finger_table
                     False -> {
-                      io.println(
-                        "Adding "
-                        <> int.to_string(result.1)
-                        <> " to Node "
-                        <> int.to_string(state.id)
-                        <> "'s finger table.",
-                      )
+                      // io.println(
+                      //   "Adding "
+                      //   <> int.to_string(result.1)
+                      //   <> " to Node "
+                      //   <> int.to_string(state.id)
+                      //   <> "'s finger table.",
+                      // )
                       [#(result.1, result.2), ..state.finger_table]
                     }
                   }
                 }
                 _ -> {
-                  io.println(
-                    "Node "
-                    <> int.to_string(state.id)
-                    <> " replacing finger "
-                    <> int.to_string(finger_id)
-                    <> " with "
-                    <> int.to_string(result.1)
-                    <> ".",
-                  )
+                  // io.println(
+                  //   "Node "
+                  //   <> int.to_string(state.id)
+                  //   <> " replacing finger "
+                  //   <> int.to_string(finger_id)
+                  //   <> " with "
+                  //  <> int.to_string(result.1)
+                  //  <> ".",
+                  // )
                   // replace the finger with finger_id
                   list.map(state.finger_table, fn(x) {
                     case x.0 == finger_id {
@@ -252,7 +247,7 @@ fn handle_messages(state: NodeState, msg: NodeMsg) {
       }
     }
 
-    FindSuccessor(id, reply_to) -> {
+    FindSuccessor(hops, id, reply_to) -> {
       let assert Ok(successor) = list.first(state.finger_table)
       let found = range_in(id, state.id, successor.0) || id == successor.0
       case found {
@@ -266,7 +261,7 @@ fn handle_messages(state: NodeState, msg: NodeMsg) {
           // send successor to reply_to
           process.send(
             reply_to,
-            SuccessorResult(#(id, successor.0, successor.1)),
+            SuccessorResult(hops, #(id, successor.0, successor.1)),
           )
           actor.continue(state)
         }
@@ -277,16 +272,19 @@ fn handle_messages(state: NodeState, msg: NodeMsg) {
               id,
               list.reverse(state.finger_table),
             )
-          io.println(
-            "node "
-            <> int.to_string(state.id)
-            <> " looking for successor of "
-            <> int.to_string(id)
-            <> " forwarding to finger "
-            <> int.to_string(closest_preceding_finger.0),
-          )
+          // io.println(
+          //  "node "
+          //  <> int.to_string(state.id)
+          //  <> " looking for successor of "
+          //  <> int.to_string(id)
+          //  <> " forwarding to finger "
+          //  <> int.to_string(closest_preceding_finger.0),
+          //)
           // forward the message to closest_preceding_finger
-          process.send(closest_preceding_finger.1, FindSuccessor(id, reply_to))
+          process.send(
+            closest_preceding_finger.1,
+            FindSuccessor(hops + 1, id, reply_to),
+          )
           actor.continue(state)
         }
       }
@@ -302,11 +300,11 @@ fn handle_messages(state: NodeState, msg: NodeMsg) {
         option.Some(x) -> {
           case range_in(x.0, state.id, succ.0) {
             False -> {
-              io.println(
-                "Node "
-                <> int.to_string(state.id)
-                <> " stablized! Successor unchanged.",
-              )
+              // io.println(
+              //   "Node "
+              //   <> int.to_string(state.id)
+              //   <> " stablized! Successor unchanged.",
+              // )
               process.send(succ.1, Notify(reply_to))
               actor.continue(state)
             }
@@ -315,14 +313,14 @@ fn handle_messages(state: NodeState, msg: NodeMsg) {
                 [] -> []
                 [_, ..tail] -> [x, ..tail]
               }
-              io.println(
-                "Node "
-                <> int.to_string(state.id)
-                <> " stablized! Successor changed. "
-                <> int.to_string(succ.0)
-                <> " -> "
-                <> int.to_string(x.0),
-              )
+              // io.println(
+              //   "Node "
+              //   <> int.to_string(state.id)
+              //   <> " stablized! Successor changed. "
+              //   <> int.to_string(succ.0)
+              //   <> " -> "
+              //   <> int.to_string(x.0),
+              // )
               process.send(x.1, Notify(reply_to))
               actor.continue(NodeState(..state, finger_table: new_ft))
             }
@@ -334,31 +332,31 @@ fn handle_messages(state: NodeState, msg: NodeMsg) {
     Notify(node) -> {
       case state.predecessor {
         option.None -> {
-          io.println(
-            "Node "
-            <> int.to_string(state.id)
-            <> " is nodified. Its predecessor is set to node "
-            <> int.to_string(node.0),
-          )
+          // io.println(
+          //   "Node "
+          //   <> int.to_string(state.id)
+          //   <> " is nodified. Its predecessor is set to node "
+          //   <> int.to_string(node.0),
+          // )
           actor.continue(NodeState(..state, predecessor: option.Some(node)))
         }
         option.Some(predecessor) -> {
           case range_in(node.0, predecessor.0, state.id) {
             True -> {
-              io.println(
-                "Node "
-                <> int.to_string(state.id)
-                <> " is nodified. Its predecessor is set to node "
-                <> int.to_string(node.0),
-              )
+              // io.println(
+              //   "Node "
+              //   <> int.to_string(state.id)
+              //   <> " is nodified. Its predecessor is set to node "
+              //   <> int.to_string(node.0),
+              // )
               actor.continue(NodeState(..state, predecessor: option.Some(node)))
             }
             False -> {
-              io.println(
-                "Node "
-                <> int.to_string(state.id)
-                <> " is nodified. Its predecessor does not change.",
-              )
+              // io.println(
+              //   "Node "
+              //   <> int.to_string(state.id)
+              //   <> " is nodified. Its predecessor does not change.",
+              // )
               actor.continue(state)
             }
           }
@@ -371,7 +369,7 @@ fn handle_messages(state: NodeState, msg: NodeMsg) {
     }
 
     Join(self_id, self_subject, node) -> {
-      process.send(node, FindSuccessor(state.id, self_subject))
+      process.send(node, FindSuccessor(0, state.id, self_subject))
       actor.continue(
         NodeState(..state, requests_table: [
           #(state.id, SetSuccessor(#(self_id, self_subject))),
@@ -382,7 +380,7 @@ fn handle_messages(state: NodeState, msg: NodeMsg) {
 
     SearchFileKey(key, self_subject) -> {
       // find the successor of key
-      process.send(self_subject, FindSuccessor(key, self_subject))
+      process.send(self_subject, FindSuccessor(0, key, self_subject))
       actor.continue(
         NodeState(..state, requests_table: [
           #(key, FindFileKey),
@@ -563,33 +561,49 @@ fn fix_all(nodes: List(#(Int, process.Subject(NodeMsg)))) {
 fn add_node(n: #(Int, process.Subject(NodeMsg))) {
   let assert Ok(m) = int.power(2, 30.0)
   let new_id = int.random(float.round(m))
-  io.println("Adding new node " <> int.to_string(new_id) <> " to the network.")
+  // io.println("Adding new node " <> int.to_string(new_id) <> " to the network.")
   let new_node = start_node(new_id)
   process.send(new_node, Join(new_id, new_node, n.1))
   #(new_id, new_node)
 }
 
+fn search_rand_key(k: Int, i: Int, n: List(#(Int, process.Subject(NodeMsg)))) {
+  case n {
+    [] -> Nil
+    [head, ..tail] -> {
+      let assert Ok(m) = int.power(2, 30.0)
+      let rand_key = int.random(float.round(m))
+      process.send(head.1, SearchFileKey(rand_key, head.1))
+      case i + 1 == k {
+        True -> search_rand_key(k, 0, tail)
+        False -> search_rand_key(k, i + 1, n)
+      }
+    }
+  }
+}
+
 pub fn main() {
-  let nodes = make_ring(16, 512)
-  echo list.unzip(nodes).0
-  let assert Ok(n) = list.first(nodes)
+  let args = argv.load().arguments
+  case args {
+    [num_nodes, num_requests] -> {
+      let assert Ok(num_nodes) = int.parse(num_nodes)
+      let assert Ok(num_requests) = int.parse(num_requests)
+      let nodes = make_ring(num_nodes - 4, 512)
+      // echo list.unzip(nodes).0
+      let assert Ok(n) = list.first(nodes)
+      // add 4 more nodes just to show that I can
+      let nodes = [add_node(n), ..nodes]
+      let nodes = [add_node(n), ..nodes]
+      let nodes = [add_node(n), ..nodes]
+      let nodes = [add_node(n), ..nodes]
+      process.sleep(100)
 
-  io.println("Searching for file key 1000")
-  process.send(n.1, SearchFileKey(1000, n.1))
-  process.sleep(100)
-
-  let nodes = [add_node(n), ..nodes]
-  let nodes = [add_node(n), ..nodes]
-  let nodes = [add_node(n), ..nodes]
-  let nodes = [add_node(n), ..nodes]
-  process.sleep(100)
-
-  fix_all(nodes)
-  process.sleep(100)
-  // echo n.0
-  io.println("Searching for file key 300000000")
-  process.send(n.1, SearchFileKey(300_000_000, n.1))
-  process.send(n.1, SearchFileKey(1000, n.1))
-  process.send(n.1, SearchFileKey(1_000_000_000, n.1))
-  process.sleep(1000)
+      fix_all(nodes)
+      process.sleep(100)
+      // have each node search for num_requests random keys
+      search_rand_key(num_requests, 0, nodes)
+      process.sleep(1000)
+    }
+    _ -> io.println("Please provide two arguments: num_nodes num_requests")
+  }
 }

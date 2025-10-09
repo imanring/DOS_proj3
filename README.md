@@ -4,7 +4,17 @@ We create a chord network. We use random integers on a very large domain for the
 
 Importantly, our implementation is asynchronous, while the pseudo code in the paper is synchronous. This is done by creating a requests table where nodes store the requests that they have sent out and are waiting for a reply on. When they receive a reply, they pop the result from the table and continue with what they were doing. In find successor, nodes only pass the message on without waiting for a reply, because the node that finds the result will send it back to the original requestor. This implementation enables parallel execution and avoids the deadlocks that could easily happen in the original Chord pseudo code, but it is much easier to track what each person is searching for making this scheme less private.
 
-We initiate the network. An example run with the following main function was run.
+I ran this command `gleam run 4098 2 > hops.txt` and analyzed the results with the following python code.
+
+```
+import numpy as np
+r = np.loadtxt('hops.txt')
+r.mean()
+```
+
+The resulting average number of hops was `5.8715`, which is consistent with the logorithmic time expectation.
+
+We initiate the network. An example run with the following main function was run where we had more print statements.
 
 ```
 let nodes = make_ring(16, 512)
