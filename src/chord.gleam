@@ -35,7 +35,7 @@ fn range_in(x, a, b) {
 }
 
 pub type RequestType {
-  SetSuccessor
+  SetSuccessor(self_node: #(Int, process.Subject(NodeMsg)))
   FindFileKey
   ReplaceFinger(id: Int)
 }
@@ -51,7 +51,11 @@ pub type NodeMsg {
     reply_to: #(Int, process.Subject(NodeMsg)),
   )
   // join the network by asking an existing node to find your successor
-  Join(node: process.Subject(NodeMsg))
+  Join(
+    self_id: Int,
+    self_subject: process.Subject(NodeMsg),
+    node: process.Subject(NodeMsg),
+  )
   // periodically verify the finger table
   FixFingers(self_subject: process.Subject(NodeMsg))
   // notify a node that you might be its predecessor
@@ -142,18 +146,21 @@ fn handle_messages(state: NodeState, msg: NodeMsg) {
 
     SuccessorResult(result) -> {
       //io.println("Got result! The Id is " <> int.to_string(result.0))
+      // look up in requests table
       case list.key_find(state.requests_table, result.0) {
         Ok(rslt) -> {
           // remove from requests table
           let new_request_table =
             list.filter(state.requests_table, fn(x) { x != #(result.0, rslt) })
           case rslt {
-            SetSuccessor -> {
+            SetSuccessor(self_node) -> {
               // set successor to result
               let new_finger_table = case state.finger_table {
                 [] -> [#(result.1, result.2)]
                 [_first, ..rest] -> [#(result.1, result.2), ..rest]
               }
+              process.send(self_node.1, Stablize(option.None, self_node))
+              process.send(self_node.1, FixFingers(self_node.1))
               // remove from requests table and set successor
               actor.continue(
                 NodeState(
@@ -187,7 +194,9 @@ fn handle_messages(state: NodeState, msg: NodeMsg) {
                     True -> state.finger_table
                     False -> {
                       io.println(
-                        "Adding to Node "
+                        "Adding "
+                        <> int.to_string(result.1)
+                        <> " to Node "
                         <> int.to_string(state.id)
                         <> "'s finger table.",
                       )
@@ -268,12 +277,14 @@ fn handle_messages(state: NodeState, msg: NodeMsg) {
               id,
               list.reverse(state.finger_table),
             )
-          //io.println(
-          //  "node "
-          //  <> int.to_string(state.id)
-          //  <> " forwarding to finger "
-          //  <> int.to_string(closest_preceding_finger.0),
-          //)
+          io.println(
+            "node "
+            <> int.to_string(state.id)
+            <> " looking for successor of "
+            <> int.to_string(id)
+            <> " forwarding to finger "
+            <> int.to_string(closest_preceding_finger.0),
+          )
           // forward the message to closest_preceding_finger
           process.send(closest_preceding_finger.1, FindSuccessor(id, reply_to))
           actor.continue(state)
@@ -359,11 +370,11 @@ fn handle_messages(state: NodeState, msg: NodeMsg) {
       actor.continue(NodeState(..state, file_keys: [key, ..state.file_keys]))
     }
 
-    Join(node) -> {
-      process.send(node, FindSuccessor(state.id, node))
+    Join(self_id, self_subject, node) -> {
+      process.send(node, FindSuccessor(state.id, self_subject))
       actor.continue(
         NodeState(..state, requests_table: [
-          #(state.id, SetSuccessor),
+          #(state.id, SetSuccessor(#(self_id, self_subject))),
           ..state.requests_table
         ]),
       )
@@ -534,18 +545,47 @@ fn make_ring(n: Int, k: Int) {
   nodes
 }
 
-pub fn main() {
-  let nodes = make_ring(128, 512)
-  let assert Ok(n) = list.first(nodes)
+fn fix_all(nodes: List(#(Int, process.Subject(NodeMsg)))) {
+  case nodes {
+    [] -> Nil
+    [head, ..tail] -> {
+      process.send(head.1, Stablize(option.None, #(head.0, head.1)))
+      process.send(head.1, FixFingers(head.1))
+      fix_all(tail)
+    }
+  }
+}
+
+fn add_node(n: #(Int, process.Subject(NodeMsg))) {
   let assert Ok(m) = int.power(2, 30.0)
   let new_id = int.random(float.round(m))
+  io.println("Adding new node " <> int.to_string(new_id) <> " to the network.")
   let new_node = start_node(new_id)
-  process.send(new_node, Join(n.1))
-  process.send(new_node, Stablize(option.None, #(new_id, new_node)))
-  process.send(n.1, FixFingers(n.1))
-  // echo n.0
-  process.send(n.1, SearchFileKey(300_000_000, n.1))
-  process.sleep(1000)
+  process.send(new_node, Join(new_id, new_node, n.1))
+  #(new_id, new_node)
+}
+
+pub fn main() {
+  let nodes = make_ring(16, 512)
+  echo list.unzip(nodes).0
+  let assert Ok(n) = list.first(nodes)
+
+  io.println("Searching for file key 1000")
   process.send(n.1, SearchFileKey(1000, n.1))
+  process.sleep(100)
+
+  let nodes = [add_node(n), ..nodes]
+  let nodes = [add_node(n), ..nodes]
+  let nodes = [add_node(n), ..nodes]
+  let nodes = [add_node(n), ..nodes]
+  process.sleep(100)
+
+  fix_all(nodes)
+  process.sleep(100)
+  // echo n.0
+  io.println("Searching for file key 300000000")
+  process.send(n.1, SearchFileKey(300_000_000, n.1))
+  process.send(n.1, SearchFileKey(1000, n.1))
+  process.send(n.1, SearchFileKey(1_000_000_000, n.1))
   process.sleep(1000)
 }
