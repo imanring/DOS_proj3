@@ -1,6 +1,6 @@
 # Chord
 
-We create a chord network. We use random integers on a very large domain for the ids because for this simulation, this is essentially the same as a hash function.
+We (Chenhao Wang and Isaac Manring) create a chord network. We use random integers on a very large domain for the ids because for this simulation, this is essentially the same as a hash function.
 
 Importantly, our implementation is asynchronous, while the pseudo code in the paper is synchronous. This is done by creating a requests table where nodes store the requests that they have sent out and are waiting for a reply on. When they receive a reply, they pop the result from the table and continue with what they were doing. In find successor, nodes only pass the message on without waiting for a reply, because the node that finds the result will send it back to the original requestor. This implementation enables parallel execution and avoids the deadlocks that could easily happen in the original Chord pseudo code, but it is much easier to track what each person is searching for making this scheme less private.
 
